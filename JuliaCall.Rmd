@@ -1,0 +1,159 @@
+---
+title: "RJulia"
+output: html_document
+---
+
+## Set up
+
+```{r}
+library(JuliaCall)
+
+## initial setup
+julia <- julia_setup(JULIA_HOME="/Applications/Julia-1.1.app/Contents/Resources/julia/bin/")
+
+## include Julia package, need to install these packages in Julia first
+julia_library(pkg_name = "Turing")
+julia_library(pkg_name = "MCMCChains")
+julia_library(pkg_name = "Distributions")
+julia_library(pkg_name = "DataFrames")
+```
+
+
+##### Statistical Rethinking- Chapter 5 - Milk model (m5.7), linear regression of Kcal on neocortex and mass
+
+```{r}
+## Get the data ready
+library(rethinking)
+data(milk)
+milk = milk
+milk<- milk[ complete.cases(milk$neocortex.perc) , ]
+K <- scale( milk$kcal.per.g )
+N <- scale( milk$neocortex.perc )
+M <- scale( log(milk$mass))
+
+## build model
+julia_command("
+@model milk5_7(K, N, M) = begin
+    
+    #prior for sigma
+    sigma ~ Exponential(1)
+    
+    # prior for bM
+    bM ~ Normal(0, 0.5)
+    
+    # prior for bN
+    bN ~ Normal(0, 0.5)
+    
+    # prior for intercept
+    a ~ Normal(0, 0.2)
+    
+    #likelihood
+    n_obs = length(K)
+    mu = a .+ bN .* N .+ bM .* M
+    
+    for i in 1:n_obs
+        K[i] ~ Normal(mu[i], sigma)
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("milk5_7", K, N, M)
+b = julia_call("HMC",iterations, eps, tau)
+chain_milk = julia_call("sample",a, b)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_milk)
+df
+
+
+## plot modeL. DO NOT WORK => NEED TO FIX
+c = julia_command("MCMCChains.plot")
+p = julia_eval("MCMCChains.plot(chain_milk)")
+julia_call("MCMCChains.plot", df)
+
+```
+
+
+
+
+############# Statistical Rethinking- Chapter 5 - Milk model (m5.10), with categorical variables: clade and house
+
+```{r}
+data(milk)
+d <- milk
+K <- scale( d$kcal.per.g )
+unique(d$clade)
+
+clade_id <- as.integer( d$clade )
+set.seed(63)
+house_id <- sample( rep(1:4,each=8) , size=nrow(d) )
+
+julia_command(
+  "@model milk5_10(K, clade_id, house_id) = begin
+    
+    #prior for sigma
+    sigma ~ Exponential(1)
+    
+    
+    # prior for h
+    h = Array{Real}(undef, 4)
+    h ~ [Normal(0, 0.5)]
+    
+    
+    # prior for a
+    a = Array{Real}(undef, 4)
+    a ~ [Normal(0, 0.5)]
+    
+    
+    #likelihood
+    n_obs = length(K)
+    mu = a[clade_id] + h[house_id]
+    
+    for i in 1:n_obs
+        K[i] ~ Normal(mu[i], sigma)
+    end
+    end;
+")
+
+iterations = 2000L
+eps = 0.1
+tau = 5L
+
+## run model
+a = julia_call("milk5_10", K, clade_id, house_id)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler
+chain_milk_10 = julia_call("sample",a, b)
+## NUTS samples instead of HMC sampler
+chain_milk_10_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_milk_10)
+df
+
+
+## plot modeL. DO NOT WORK => NEED TO FIX
+d = julia_command("MCMCChains.plot")
+p = julia_eval("MCMCChains.plot(chain_milk)")
+julia_call("MCMCChains.plot", df)
+julia_call("MCMCChains.plot", chain_milk_10_NUTS)
+
+
+```
+
+
+
+############# Statistical Rethinking - Chapter 8 - Rugged model (m8.5), linear regression of log_gdp on rugged, 
+############## for african and non-african countries
+
+```{r}
+
+```
+
