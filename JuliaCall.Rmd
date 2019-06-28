@@ -16,6 +16,7 @@ julia_library(pkg_name = "Turing")
 julia_library(pkg_name = "MCMCChains")
 julia_library(pkg_name = "Distributions")
 julia_library(pkg_name = "DataFrames")
+julia_library(pkg_name = "StatsFuns")
 ```
 
 
@@ -150,10 +151,534 @@ julia_call("MCMCChains.plot", chain_milk_10_NUTS)
 
 
 
-############# Statistical Rethinking - Chapter 8 - Rugged model (m8.5), linear regression of log_gdp on rugged, 
-############## for african and non-african countries
+############# Statistical Rethinking - Chapter 8 - Rugged model (m8.5), linear regression of log_gdp on rugged, for african and non-african countries
 
 ```{r}
+library(rethinking)
+data(rugged)
+d <- rugged
 
+# make log version of outcome
+d$log_gdp <- log( d$rgdppc_2000 )
+# extract countries with GDP data
+dd <- d[ complete.cases(d$rgdppc_2000) , ]
+# rescale variables
+log_gdp_std <- dd$log_gdp / mean(dd$log_gdp)
+rugged_std <- dd$rugged / max(dd$rugged)
+
+# African continent indicator, NEED INTEGER INDEX OR ELSE TURING RETURN ERROR
+cid <- ifelse( dd$cont_africa==1 , 1L , 2L )
+
+# build model
+julia_command("
+@model rugged_model(log_gdp, rugged, africa_id) = begin
+    
+    #prior for sigma
+    sigma ~ Exponential(1)
+    
+    # prior for b
+    b = Array{Real}(undef, 2)
+    b ~ [Normal(0, 0.3)]
+    
+    # prior for a
+    a = Array{Real}(undef, 2)
+    a ~ [Normal(1, 0.1)]
+    
+    
+    #likelihood
+    n_obs = length(log_gdp)
+    mu = a[africa_id] .+ b[africa_id] .* (rugged .- 0.215)
+    
+    for i in 1:n_obs
+        log_gdp[i] ~ Normal(mu[i], sigma)
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("rugged_model", log_gdp_std, rugged_std, cid)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, STD TOO BIG!!!!
+chain_rugged_model = julia_call("sample",a, b)
+## NUTS samples instead of HMC sampler
+chain_rugged_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_rugged_model_NUTS)
+df
+
+
+
+```
+
+
+
+############# Statistical Rethinking - Tulips model (m8.7), linear regression of bloom on water, shade and water*shade
+
+```{r}
+library(rethinking)
+data(tulips)
+d <- tulips
+
+blooms_std <- d$blooms / max(d$blooms)
+water_cent <- d$water - mean(d$water)
+shade_cent <- d$shade - mean(d$shade)
+
+
+# build model
+julia_command("
+@model tulips_model(blooms, water, shade) = begin
+    
+    #prior for sigma
+    sigma ~ Exponential(1)
+    
+    # prior for bws
+    bws ~ Normal(0, 0.25)
+    
+    # prior for bs
+    bs ~ Normal(0, 0.25)
+    
+    # prior for bw
+    bw ~ Normal(0, 0.25)
+    
+    # prior for a
+    a ~ Normal(0.5, 0.25)
+    
+    
+    #likelihood
+    n_obs = length(blooms)
+    mu = a .+ bw .* water .+ bs .* shade .+ bws .* water .* shade
+    
+    for i in 1:n_obs
+        blooms[i] ~ Normal(mu[i], sigma)
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("tulips_model", blooms_std, water_cent, shade_cent)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler
+chain_tulips_model = julia_call("sample",a, b)
+## NUTS samples instead of HMC sampler
+chain_tulips_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_tulips_model_NUTS)
+```
+
+
+
+############# Statistical Rethinking - Chapter 11 - Chimpanzees model (m11.3)
+```{r}
+library(rethinking)
+data(chimpanzees)
+d <- chimpanzees
+
+pulled_left = d$pulled_left
+condition = d$condition
+prosoc_left = d$prosoc_left
+
+# build model
+julia_command("
+@model chimp_model(pull, cond, pros) = begin
+    
+    # prior for bpC
+    bpC ~ Normal(0, 10)
+    
+    # prior for bp
+    bp ~ Normal(0, 10)
+    
+    # prior for a
+    a ~ Normal(0, 10)
+    
+    
+    #likelihood
+    n_obs = length(pull)
+    logit_p = a .+ (bp .* pros) .+ (bpC .* cond .* pros)
+    
+    for i in 1:n_obs
+        pull[i] ~ BinomialLogit(1, logit_p[i])
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("chimp_model", pulled_left, condition, prosoc_left)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, big std compared to NUTS
+chain_chimp_model = julia_call("sample",a, b)
+## NUTS samples instead of HMC sampler
+chain_chimp_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_chimp_model_NUTS)
+```
+
+
+
+############# Statistical Rethinking - Chapter 11 - Chimpanzees model (m11.4), each intercept for each actor (7 actors)
+```{r}
+library(rethinking)
+data(chimpanzees)
+d <- chimpanzees
+
+pulled_left = d$pulled_left
+condition = d$condition
+prosoc_left = d$prosoc_left
+actor = as.integer(d$actor)
+n_actor = length(unique(actor))
+
+# build model
+julia_command("
+@model chimp_model_2(pull, cond, pros, actor) = begin
+    
+    # prior for bpC
+    bpC ~ Normal(0, 10)
+    
+    # prior for bp
+    bp ~ Normal(0, 10)
+    
+    # prior for as, 7 a
+    a = Array{Real}(undef, 7)
+    a ~ [Normal(0, 10)]
+    
+    
+    #likelihood
+    n_obs = length(pull)
+    logit_p = a[actor] .+ (bp .* pros) .+ (bpC .* cond .* pros)
+    
+    for i in 1:n_obs
+        pull[i] ~ BinomialLogit(1, logit_p[i])
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("chimp_model_2", pulled_left, condition, prosoc_left, actor)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, 
+chain_chimp_model_2 = julia_call("sample",a, b)
+
+## NUTS samples instead of HMC sampler, bigger std than HMC
+chain_chimp_model_2_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_chimp_model_2_NUTS)
+```
+
+
+############# Statistical Rethinking - Chapter 11 - UCBadmit model (m11.9), each intercept for each department
+
+```{r}
+library(rethinking)
+data(UCBadmit)
+d <- UCBadmit
+
+male_id = ifelse( d$applicant.gender=="male" , 1 , 0 )
+admit = d$admit
+applications = d$applications
+dept_id = as.integer(coerce_index( d$dept ))
+n_dept = length(unique(dept_id)) # 6 departments
+
+# build model
+julia_command("
+@model admit_model(admit, applications, male, dept) = begin
+    
+    # prior for bm
+    bm ~ Normal(0, 10)
+    
+    # prior for as, 6 a
+    a = Array{Real}(undef, 6)
+    a ~ [Normal(0, 10)]
+    
+    
+    #likelihood
+    logit_p = a[dept] .+ (bm .* male) 
+    n_obs = length(admit)
+    
+    for i in 1:n_obs
+        admit[i] ~ BinomialLogit(applications[i], logit_p[i])
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("admit_model", admit, applications, male_id, dept_id)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, WEIRD RESULTS
+chain_admit_model = julia_call("sample",a, b)
+
+## NUTS samples instead of HMC sampler, bigger std than HMC
+chain_admit_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_admit_model_NUTS)
+```
+
+
+############# Statistical Rethinking - Chapter 11 - Kline model (m11.10),
+```{r}
+library(rethinking)
+data(Kline)
+d <- Kline
+
+log_pop <- log(d$population)
+contact_high <- ifelse( d$contact=="high" , 1 , 0 )
+total_tools = d$total_tools
+
+# build model
+julia_command("
+@model tool_model(total_tools, log_pop, contact) = begin
+    
+    # prior for bpC
+    bPC ~ Normal(0, 1)
+    
+    # prior for bC
+    bC ~ Normal(0, 1)
+    
+    # prior for bP
+    bP ~ Normal(0, 1)
+    
+    # prior for a
+    a ~ Normal(0, 100)
+    
+    
+    #likelihood
+    log_lambda = a .+ (bP .* log_pop) .+ (bC .* contact) .+ (bPC .* contact .* log_pop)
+    lambda = exp.(log_lambda)
+    n_obs = length(total_tools)
+    
+    for i in 1:n_obs
+        total_tools[i] ~ Poisson(lambda[i])
+    end
+    end;
+")
+
+iterations = 4000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("tool_model", total_tools, log_pop, contact_high)
+b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, Weird results
+chain_tool_model = julia_call("sample",a, b)
+
+## NUTS samples instead of HMC sampler, 
+chain_tool_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_tool_model_NUTS)
+```
+
+
+
+############# Statistical Rethinking - Chapter 12 - Trolley model (m12.1),
+
+################# Successfully run in Julia but not in R ################
+
+```{r}
+library(rethinking)
+data(Trolley)
+d <- Trolley
+
+response = as.integer(d$response)
+action = as.integer(d$action)
+intention = as.integer(d$intention)
+contact = as.integer(d$contact)
+
+# build model
+julia_command("
+@model trolley_model(response, action, intention, contact) = begin
+    n_obs = length(response)
+
+    # prior for bA
+    bA = Array{Float64}(undef, 1)
+    bA ~ Normal(0, 10)
+    
+    # prior for bI
+    bI = Array{Float64}(undef, 1)
+    bI ~ Normal(0, 10)
+    
+    # prior for bC
+    bC = Array{Float64}(undef, 1)
+    bC ~ Normal(0, 10)
+    
+    # prior for a, 6
+    a = Array{BigFloat}(undef, 6)
+    a ~ [Normal(0, 10)]
+    b = sort(a)
+    
+    
+    #likelihood
+    
+    theta = (bA .* action) .+ (bC .* contact) .+ (bI .* intention)
+    
+    p = Array{BigFloat}(undef, (n_obs,7))
+    
+        p[:,1] = logistic.(b[1] .- theta)
+    
+    
+    for k in 2:6
+            p[:,k] = logistic.(b[k] .- theta) - logistic.(b[k-1] .- theta)
+    end
+    
+        p[:,7] = 1 .- p[:,1] .- p[:,2] .- p[:,3] .- p[:,4] .- p[:,5] .- p[:,6]
+    
+    for i in 1:n_obs
+        response[i] ~ Categorical(p[i,:])
+    end   
+    
+    end;
+")
+
+iterations = 1000L
+eps = 0.1
+tau = 10L
+
+## run model
+a = julia_call("trolley_model", response, action, intention, contact)
+#b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, Weird results
+#chain_trolley_model = julia_call("sample",a, b)
+
+## NUTS samples instead of HMC sampler, 
+chain_trolley_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_trolley_model_NUTS)
+```
+
+
+
+
+
+
+############# Statistical Rethinking - Chapter 14 - Island Distance model (m14.7),
+
+####### NEED TO FIX TYPE ERROR ###############
+
+```{r}
+library(rethinking)
+data(Kline)
+d <- Kline
+data(islandsDistMatrix)
+# display short column names, so fits on screen
+Dmat <- islandsDistMatrix
+colnames(Dmat) <- c("Ml","Ti","SC","Ya","Fi","Tr","Ch","Mn","To","Ha")
+
+
+log_pop <- log(d$population)
+total_tools = d$total_tools
+
+# build model
+julia_command("
+@model distance_model(tools, log_pop, Dmat) = begin
+    n_soc = 10
+    n_obs = 10
+    
+    # prior for rho squared
+    #rhosq = Array{Float64}(undef)
+    rhosq ~ Truncated(Cauchy(0, 1), 0, Inf)
+    
+    # prior for eta squared
+    #etasq = Array{Float64}(undef)
+    etasq ~ Truncated(Cauchy(0, 1), 0, Inf)
+    
+    # prior for bp
+    #bp = Array{Float64}(undef)
+    bp ~ Normal(0, 1)
+    
+    # prior for a
+    #a = Array(undef)
+    a ~ Normal(0, 10)
+   
+    # K
+    K = zeros(n_soc, n_soc)
+    ind = zeros(n_soc, n_soc)
+    
+    for i in 1:n_soc
+        for j in 1:n_soc
+            ind[i,j] = iszero(Dmat[i,j]) * 0.01
+            K[i,j] = etasq * exp(-rhosq * (Dmat[i,j]^2)) + ind[i,j]
+        end
+    end
+    
+    
+    # gamma
+            
+    mu = zeros(10)
+    
+    g ~ MvNormal(mu, K)
+    
+    
+    #likelihood
+    log_lambda = zeros(n_soc)
+    lambda = zeros(n_soc)
+    
+    for i in 1:n_obs
+        log_lambda[i] = a + g[i] + bp * log_pop[i]
+        lambda[i] = exp(log_lambda[i])
+        #x = eltype(lambda[i])(tools[i])
+        tools[i] ~ Poisson(lambda[i])
+    end   
+
+
+    
+    end;
+")
+
+iterations = 1000L
+eps = 0.05
+tau = 10L
+
+## run model
+a = julia_call("distance_model", total_tools, log_pop, Dmat)
+#b = julia_call("HMC",iterations, eps, tau)
+c = julia_call("NUTS", iterations, 0.65)
+
+## HMC sampler, Weird results
+#chain_distance_model = julia_call("sample",a, b)
+
+## NUTS samples instead of HMC sampler, 
+chain_distance_model_NUTS = julia_call("sample", a, c)
+
+## Change to DataFrame
+df = julia_call("DataFrame",chain_distance_model_NUTS)
 ```
 
